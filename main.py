@@ -183,7 +183,7 @@ def main():
     ) as zf:
         zf.write(OUTPUT_CSV, "submission.csv")
 
-    print("✅ Done!")
+    print("Done!")
     print(f"Saved: {OUTPUT_ZIP}")
 
 
