@@ -1,37 +1,59 @@
 import os
-print(os.getcwd())
 import re
 import math
+import zipfile
 from collections import defaultdict, Counter
 import pandas as pd
-import zipfile
+from nltk.stem import PorterStemmer
 
 # ===============================
 # PATH CONFIG
 # ===============================
-CRANFIELD_DIR = "data/Cranfield"
-TEST_CSV = "data/test.csv"
-OUTPUT_CSV = "submission/submission.csv"
-OUTPUT_ZIP = "submission/submission.zip"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CRANFIELD_DIR = os.path.join(BASE_DIR, "data", "Cranfield")
+TEST_CSV = os.path.join(BASE_DIR, "data", "test.csv")
+OUTPUT_DIR = os.path.join(BASE_DIR, "submission")
+OUTPUT_CSV = os.path.join(OUTPUT_DIR, "submission.csv")
+OUTPUT_ZIP = os.path.join(OUTPUT_DIR, "submission.zip")
 
 TOP_K = 50
 
-# BM25 parameters
-k1 = 1.5
-b = 0.75
+# BM25 parameters (good for Cranfield)
+k1 = 1.8
+b = 0.7
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 
+# ===============================
+# STOPWORDS
+# ===============================
+STOPWORDS = {
+    "the","is","at","which","on","and","a","an",
+    "of","to","in","for","with","by","from",
+    "that","this","are","was","be","as","it"
+}
+
+stemmer = PorterStemmer()
 
 # ===============================
 # TOKENIZE
 # ===============================
 def tokenize(text: str):
-    return TOKEN_PATTERN.findall(text.lower())
+
+    tokens = TOKEN_PATTERN.findall(text.lower())
+
+    tokens = [
+        stemmer.stem(t)
+        for t in tokens
+        if t not in STOPWORDS
+    ]
+
+    return tokens
 
 
 # ===============================
-# LOAD DOCUMENTS FROM FOLDER
+# LOAD DOCUMENTS
 # ===============================
 def load_documents(folder_path):
 
@@ -41,13 +63,11 @@ def load_documents(folder_path):
 
         if filename.endswith(".txt"):
 
-            # nếu tên file là 1.txt, 2.txt ...
             doc_id = int(os.path.splitext(filename)[0])
-
-            file_path = os.path.join(folder_path, filename)
+            path = os.path.join(folder_path, filename)
 
             with open(
-                file_path,
+                path,
                 "r",
                 encoding="utf-8",
                 errors="ignore"
@@ -72,17 +92,17 @@ def build_bm25_index(documents):
         terms = tokenize(text)
         doc_len[doc_id] = len(terms)
 
-        term_freq = Counter(terms)
+        tf = Counter(terms)
 
-        for term, freq in term_freq.items():
+        for term, freq in tf.items():
             inverted_index[term][doc_id] = freq
             df[term] += 1
 
     N = len(documents)
     avgdl = sum(doc_len.values()) / N
 
-    # compute IDF
     idf = {}
+
     for term, freq in df.items():
         idf[term] = math.log(
             (N - freq + 0.5) / (freq + 0.5) + 1
@@ -93,7 +113,7 @@ def build_bm25_index(documents):
 
 
 # ===============================
-# BM25 RETRIEVE
+# BM25 RETRIEVE (CORRECT VERSION)
 # ===============================
 def retrieve(query,
              inverted_index,
@@ -101,10 +121,12 @@ def retrieve(query,
              avgdl,
              idf):
 
-    q_terms = tokenize(query)
     scores = defaultdict(float)
 
-    for term in q_terms:
+    q_terms = tokenize(query)
+    q_freq = Counter(q_terms)
+
+    for term, qf in q_freq.items():
 
         if term not in inverted_index:
             continue
@@ -116,33 +138,31 @@ def retrieve(query,
                 1 - b + b * doc_len[doc_id] / avgdl
             )
 
-            score = idf[term] * numerator / denominator
-            scores[doc_id] += score
+            score = idf[term] * (numerator / denominator)
+
+            # query frequency weight
+            scores[doc_id] += qf * score
 
     ranked_docs = sorted(
         scores.items(),
         key=lambda x: (-x[1], x[0])
     )
 
-    return [doc_id for doc_id, _ in ranked_docs[:TOP_K]]
+    return [doc for doc, _ in ranked_docs[:TOP_K]]
 
 
 # ===============================
-# MAIN PIPELINE
+# MAIN
 # ===============================
 def main():
 
-    # tạo folder submission nếu chưa có
-    os.makedirs("submission", exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # load documents
     documents = load_documents(CRANFIELD_DIR)
 
-    # build bm25
     inverted_index, doc_len, avgdl, idf = \
         build_bm25_index(documents)
 
-    # load queries
     queries = pd.read_csv(TEST_CSV)
 
     results = []
@@ -152,7 +172,7 @@ def main():
         qid = int(row["query_id"])
         qtext = row["query"]
 
-        relevant_docs = retrieve(
+        docs = retrieve(
             qtext,
             inverted_index,
             doc_len,
@@ -163,19 +183,12 @@ def main():
         results.append({
             "query_id": qid,
             "query": qtext,
-            "relevant_docs":
-                " ".join(map(str, relevant_docs))
+            "relevant_docs": " ".join(map(str, docs))
         })
 
-    df_out = pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    df.to_csv(OUTPUT_CSV, index=False)
 
-    df_out.to_csv(
-        OUTPUT_CSV,
-        index=False,
-        encoding="utf-8"
-    )
-
-    # zip submission
     with zipfile.ZipFile(
         OUTPUT_ZIP,
         "w",
@@ -183,8 +196,8 @@ def main():
     ) as zf:
         zf.write(OUTPUT_CSV, "submission.csv")
 
-    print("Done!")
-    print(f"Saved: {OUTPUT_ZIP}")
+    print("✅ Done!")
+    print(f"Saved to: {OUTPUT_ZIP}")
 
 
 if __name__ == "__main__":
